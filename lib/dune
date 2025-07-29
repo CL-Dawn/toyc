@@ -1,0 +1,3 @@
+(library
+ (name toyc)
+ (modules lexer ast parser semant codegenerator))

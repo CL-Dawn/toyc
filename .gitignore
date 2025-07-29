@@ -1,1 +1,22 @@
+# Dune 构建输出
 _build/
+
+# 编译产物
+*.exe
+*.native
+*.byte
+*.cm*
+*.o
+*.a
+*.annot
+
+# 依赖文件
+*.install
+.opam/
+.merlin
+
+# 可执行文件
+bin/
+
+# 编辑器文件
+*~
