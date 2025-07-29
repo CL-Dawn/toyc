@@ -27,10 +27,10 @@ let process_source code =
     
     (* 2. 语义分析 *)
     if Semant.check_program ast then begin
-      Printf.printf "Semantic check passed!\n";
+      (*Printf.printf "Semantic check passed!\n";*)
       (* 3.代码生成*)
       let asm = Codegenerator.codegen_program ast in
-      Printf.printf "Generated RISC-V Assembly:\n\n";
+      (*Printf.printf "Generated RISC-V Assembly:\n\n";*)
       List.iter (Printf.printf "%s\n") asm;
       true
     end else begin
@@ -87,7 +87,7 @@ let () =
   if Array.length Sys.argv > 1 && Sys.argv.(1) = "--test" then
     run_tests ()
   else begin
-    Printf.printf "Enter ToyC code (end with Ctrl+D):\n";
+    (*Printf.printf "Enter ToyC code (end with Ctrl+D):\n";*)
     let code = In_channel.input_all stdin in
     ignore (process_source code)
 end
