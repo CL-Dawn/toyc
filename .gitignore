@@ -15,8 +15,5 @@ _build/
 .opam/
 .merlin
 
-# 可执行文件
-bin/
-
 # 编辑器文件
 *~
