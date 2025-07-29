@@ -21,7 +21,7 @@ let process_source code =
     let ast = Parser.program Lexer.token lexbuf in
     
     (* 打印AST结构 *)
-    Printf.printf "\n[DEBUG] Generated AST:\n";
+    (*Printf.printf "\n[DEBUG] Generated AST:\n";*)
     (* 需要先在ast.ml中实现pp_program函数 *)
     (* Printf.printf "%a\n" Ast.pp_program ast; *) 
     
