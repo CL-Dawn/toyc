@@ -101,11 +101,12 @@ let rec codegen_expr expr ctx =
       [label_end ^ ":"]
     in
     (asm, reg2, ctx4)
-  | Binop (e1, op, e2) ->
+ | Binop (e1, op, e2) ->
       let (code1, _, ctx1) = codegen_expr e1 ctx in
-      let save_left = [ "sw a0, -4(s0)" ] in (* 保存左操作数到栈 *)
+      (* 使用固定偏移量保存左操作数 *)
+      let save_left = [ "sw a0, -16(s0)" ] in 
       let (code2, _, ctx2) = codegen_expr e2 ctx1 in
-      let restore_left = [ "lw t0, -4(s0)" ] in (* 恢复左操作数到t0 *)
+      let restore_left = [ "lw t0, -16(s0)" ] in 
       
       let compute_instr = 
         match op with
@@ -266,6 +267,7 @@ let rec codegen_stmt stmt ctx =
 
 (* 函数代码生成 *)
 let codegen_function func =
+  
   let ctx = initial_context func.name in
   
   (* 分配参数空间 *)
