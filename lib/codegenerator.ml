@@ -76,51 +76,44 @@ let rec codegen_expr expr ctx =
       (["lw a0, " ^ string_of_int offset ^ "(s0)"], "a0", ctx)
   
   | Binop (e1, op, e2) when op = And || op = Or ->
-      (* 逻辑操作短路求值 *)
-      let (code1, reg1, ctx1) = codegen_expr e1 ctx in
-      let (label_end, ctx2) = new_label ctx1 "logical_end" in
-      let (label_false, ctx3) = new_label ctx2 "logical_false" in
-      
-      let branch_instr = if op = And then "beqz" else "bnez" in
-      let set_instr = if op = And then "li" else "mv" in
-      
-      let code2, reg2, ctx4 = codegen_expr e2 ctx3 in
-      
-      let asm = code1 @
-        [branch_instr ^ " " ^ reg1 ^ ", " ^ label_false] @
-        code2 @
-        ["j " ^ label_end] @
-        [label_false ^ ":"] @
-        [set_instr ^ " " ^ reg2 ^ ", " ^ reg1] @
-        [label_end ^ ":"]
-      in
-      (asm, reg2, ctx4)
-
+    (* 逻辑操作短路求值 *)
+    let (code1, reg1, ctx1) = codegen_expr e1 ctx in
+    let (label_end, ctx2) = new_label ctx1 "logical_end" in
+    let (label_short, ctx3) = new_label ctx2 "logical_short" in
+    
+    (* 根据操作符类型确定分支条件和短路值 *)
+    let (branch_instr, short_value) = 
+      if op = And then ("beqz", 0) else ("bnez", 1)
+    in
+    
+    let code2, reg2, ctx4 = codegen_expr e2 ctx3 in
+    
+    (* 主要修改：短路分支直接设置值，不再复制寄存器 *)
+    let asm = code1 @
+      [branch_instr ^ " " ^ reg1 ^ ", " ^ label_short] @
+      code2 @
+      (* 非短路分支：转换结果为布尔值 *)
+      ["snez " ^ reg2 ^ ", " ^ reg2] @
+      ["j " ^ label_end] @
+      [label_short ^ ":"] @
+      (* 短路分支：直接加载布尔值 *)
+      ["li " ^ reg2 ^ ", " ^ string_of_int short_value] @
+      [label_end ^ ":"]
+    in
+    (asm, reg2, ctx4)
   | Binop (e1, op, e2) ->
-      let (code1, reg1, ctx1) = codegen_expr e1 ctx in
-      let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
-      (* 使用临时寄存器存储第二个操作数 *)
-      let tmp = List.hd tmp_regs in
+      let (code1, _, ctx1) = codegen_expr e1 ctx in
+      let save_left = [ "sw a0, -4(s0)" ] in (* 保存左操作数到栈 *)
+      let (code2, _, ctx2) = codegen_expr e2 ctx1 in
+      let restore_left = [ "lw t0, -4(s0)" ] in (* 恢复左操作数到t0 *)
       
-      let asm = match op with
-        | Eq -> 
-            code1 @ code2 @ 
-            ["addi " ^ tmp ^ ", " ^ reg2 ^ ", 0"] @  
-            ["sub " ^ tmp ^ ", " ^ reg1 ^ ", " ^ tmp;
-             "seqz a0, " ^ tmp]
-        | Neq ->
-            code1 @ code2 @ 
-            ["addi " ^ tmp ^ ", " ^ reg2 ^ ", 0"] @  
-            ["sub " ^ tmp ^ ", " ^ reg1 ^ ", " ^ tmp;
-             "snez a0, " ^ tmp]
-        | _ ->
-            let instr = binop_to_asm op in
-            code1 @ 
-            ["addi " ^ tmp ^ ", " ^ reg1 ^ ", 0"] @  
-            code2 @ 
-            [instr ^ " a0, " ^ tmp ^ ", " ^ reg2]
+      let compute_instr = 
+        match op with
+        | Eq ->  [ "xor a0, t0, a0"; "seqz a0, a0" ]
+        | Neq -> [ "xor a0, t0, a0"; "snez a0, a0" ]
+        | _ ->   [ binop_to_asm op ^ " a0, t0, a0" ]
       in
-      (asm, "a0", ctx2)
+      (code1 @ save_left @ code2 @ restore_left @ compute_instr, "a0", ctx2)
   | Unop (Pos, e) ->  
       let (code, reg, ctx1) = codegen_expr e ctx in
       (code, reg, ctx1)  (* 正号不需要生成额外指令 *)
@@ -139,43 +132,49 @@ let rec codegen_expr expr ctx =
   
   | Call (func, args) ->
   (* 计算栈参数数量 *)
-  let num_stack = max 0 (List.length args - List.length arg_regs) in
-  let stack_space = num_stack * 4 in
-  
-  (* 分配栈空间 *)
-  let adjust_sp = 
-    if stack_space > 0 then 
-      ["addi sp, sp, " ^ string_of_int (-stack_space)] 
-    else [] 
-  in
+      let num_reg_args = min (List.length args) (List.length arg_regs) in
+      let num_stack_args = List.length args - num_reg_args in
+      let stack_space = num_stack_args * 4 in
+      
+      (* 生成参数代码 - 修复寄存器冲突 *)
+      let rec gen_args args ctx index stack_index =
+        match args with
+        | [] -> ([], ctx)
+        | arg::rest ->
+            let (code, reg, ctx1) = codegen_expr arg ctx in
+            let arg_code, ctx2 = 
+              if index < num_reg_args then (
+                (* 寄存器参数：直接移动到目标寄存器 *)
+                let target_reg = List.nth arg_regs index in
+                (code @ [ "mv " ^ target_reg ^ ", " ^ reg ], ctx1)
+              ) else (
+                (* 栈参数：保存到临时栈位置 *)
+                let temp_offset = -12 - (index * 4) in
+                (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
+              )
+            in
+            let (rest_code, ctx3) = gen_args rest ctx2 (index+1) stack_index in
+            (arg_code @ rest_code, ctx3)
+      in
+      
+      (* 传递栈参数 *)
+      let push_stack_args = 
+        if num_stack_args > 0 then
+          [ "addi sp, sp, " ^ string_of_int (-stack_space) ] @
+          (List.init num_stack_args (fun i ->
+            let src_offset = -12 - (num_reg_args + i) * 4 in
+            [ "lw t0, " ^ string_of_int src_offset ^ "(s0)";
+              "sw t0, " ^ string_of_int (i * 4) ^ "(sp)" ]
+          ) |> List.flatten)
+        else []
+      in
+      
+      let (arg_code, ctx1) = gen_args args ctx 0 0 in
+      let call_code = [ "call " ^ func ] in
+      let cleanup_stack = if stack_space > 0 then [ "addi sp, sp, " ^ string_of_int stack_space ] else [] in
+      
+      (arg_code @ push_stack_args @ call_code @ cleanup_stack, "a0", ctx1)
 
-  (* 生成参数代码 *)
-  let rec gen_args args ctx regs stack_index =
-    match args, regs with
-    | [], _ -> ([], ctx)
-    | arg::rest, r::rs ->
-        let (code, reg_arg, ctx1) = codegen_expr arg ctx in
-        let (rest_code, ctx2) = gen_args rest ctx1 rs stack_index in
-        (code @ ["addi " ^ r ^ ", " ^ reg_arg ^ ", 0"] @ rest_code, ctx2)
-    | arg::rest, [] ->
-        let (code, reg_arg, ctx1) = codegen_expr arg ctx in
-        let offset = stack_index * 4 in
-        let (rest_code, ctx2) = gen_args rest ctx1 [] (stack_index + 1) in
-        (code @ ["sw " ^ reg_arg ^ ", " ^ string_of_int offset ^ "(sp)"] 
-         @ rest_code, ctx2)
-  in
-
-  let (arg_code, ctx1) = gen_args args ctx arg_regs 0 in
-  let call_code = ["call " ^ func] in
-  
-  (* 释放栈空间 *)
-  let restore_sp = 
-    if stack_space > 0 then 
-      ["addi sp, sp, " ^ string_of_int stack_space] 
-    else [] 
-  in
-
-  (adjust_sp @ arg_code @ call_code @ restore_sp, "a0", ctx1)
 
 (* 语句代码生成 *)
 let rec codegen_stmt stmt ctx =
