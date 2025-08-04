@@ -86,7 +86,7 @@ let rec codegen_expr expr ctx =
       if op = And then ("beqz", 0) else ("bnez", 1)
     in
     
-    let code2, reg2, ctx4 = codegen_expr e2 ctx3 in
+    let (code2, reg2, ctx4) = codegen_expr e2 ctx3 in
     
     (* 主要修改：短路分支直接设置值，不再复制寄存器 *)
     let asm = code1 @
@@ -105,26 +105,26 @@ let rec codegen_expr expr ctx =
       let (code1, _, ctx1) = codegen_expr e1 ctx in
       (* 使用固定偏移量保存左操作数 *)
       let save_left = [ "sw a0, -16(s0)" ] in 
-      let (code2, _, ctx2) = codegen_expr e2 ctx1 in
+      let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
       let restore_left = [ "lw t0, -16(s0)" ] in 
       
       let compute_instr = 
         match op with
-        | Eq ->  [ "xor a0, t0, a0"; "seqz a0, a0" ]
-        | Neq -> [ "xor a0, t0, a0"; "snez a0, a0" ]
-        | _ ->   [ binop_to_asm op ^ " a0, t0, a0" ]
+        | Eq ->  [ "xor " ^ reg2 ^ ", t0, " ^ reg2; "seqz " ^ reg2 ^ ", " ^ reg2 ]
+        | Neq -> [ "xor " ^ reg2 ^ ", t0, " ^ reg2; "snez " ^ reg2 ^ ", " ^ reg2 ]
+        | _ ->   [ binop_to_asm op ^ " " ^ reg2 ^ ", t0, " ^ reg2 ]
       in
-      (code1 @ save_left @ code2 @ restore_left @ compute_instr, "a0", ctx2)
+       (code1 @ save_left @ code2 @ restore_left @ compute_instr, reg2, ctx2)
   | Unop (Pos, e) ->  
       let (code, reg, ctx1) = codegen_expr e ctx in
       (code, reg, ctx1)  (* 正号不需要生成额外指令 *)
   | Unop (Neg, e) ->
       let (code, reg, ctx1) = codegen_expr e ctx in
-      (code @ ["neg a0, " ^ reg], "a0", ctx1)
+      (code @ ["neg " ^ reg ^ ", " ^ reg], reg, ctx1)
   
   | Unop (Not, e) ->
       let (code, reg, ctx1) = codegen_expr e ctx in
-      (code @ ["seqz a0, " ^ reg], "a0", ctx1)
+      (code @ ["seqz " ^ reg ^ ", " ^ reg], reg, ctx1)
   
   | Assign (name, e) ->
       let offset = lookup_var ctx name in
@@ -296,7 +296,7 @@ let codegen_function func =
   let frame_size = 
     let min_offset = ctx_body.next_offset in
     let total = (-min_offset + 15) land (lnot 15) in
-    max total 16
+    max total 32
   in
   
   (* 生成函数序言和结语 *)
