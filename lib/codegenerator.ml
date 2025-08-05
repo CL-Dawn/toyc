@@ -102,19 +102,18 @@ let rec codegen_expr expr ctx =
     in
     (asm, reg2, ctx4)
  | Binop (e1, op, e2) ->
-      let (code1, _, ctx1) = codegen_expr e1 ctx in
-      (* 使用固定偏移量保存左操作数 *)
-      let save_left = [ "sw a0, -16(s0)" ] in 
+      let (code1, reg1, ctx1) = codegen_expr e1 ctx in
+       (* 使用不同的寄存器保存左操作数 *)
+      let save_left = [ "mv t1, " ^ reg1 ] in 
       let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
-      let restore_left = [ "lw t0, -16(s0)" ] in 
       
       let compute_instr = 
         match op with
-        | Eq ->  [ "xor " ^ reg2 ^ ", t0, " ^ reg2; "seqz " ^ reg2 ^ ", " ^ reg2 ]
-        | Neq -> [ "xor " ^ reg2 ^ ", t0, " ^ reg2; "snez " ^ reg2 ^ ", " ^ reg2 ]
-        | _ ->   [ binop_to_asm op ^ " " ^ reg2 ^ ", t0, " ^ reg2 ]
+        | Eq ->  [ "xor t2, t1, " ^ reg2; "seqz a0, t2" ]
+        | Neq -> [ "xor t2, t1, " ^ reg2; "snez a0, t2" ]
+        | _ ->   [ binop_to_asm op ^ " a0, t1, " ^ reg2 ]
       in
-       (code1 @ save_left @ code2 @ restore_left @ compute_instr, reg2, ctx2)
+      (code1 @ save_left @ code2 @ compute_instr, "a0", ctx2)
   | Unop (Pos, e) ->  
       let (code, reg, ctx1) = codegen_expr e ctx in
       (code, reg, ctx1)  (* 正号不需要生成额外指令 *)
