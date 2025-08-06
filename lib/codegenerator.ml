@@ -58,12 +58,8 @@ let binop_to_asm = function
   | Div -> "div"
   | Mod -> "rem"
   | Lt  -> "slt"
-  | Gt  -> "sgt"
-  | Leq -> "sle"
-  | Geq -> "sge"
-  | Eq  -> "seqz"  (* 需要特殊处理 *)
-  | Neq -> "snez" (* 需要特殊处理 *)
-  | And | Or -> failwith "Logical ops need special handling"
+  | Gt  -> "sgt"   (* 伪指令，汇编器会处理 *)
+  | _ -> failwith "Complex comparisons and logical ops need special handling"
 
 (* 表达式代码生成 *)
 let rec codegen_expr expr ctx =
@@ -112,7 +108,8 @@ let rec codegen_expr expr ctx =
         [label_end ^ ":"]
     in
     (asm, "a0", ctx4)
- | Binop (e1, op, e2) ->
+
+| Binop (e1, op, e2) ->
     let (code1, reg1, ctx1) = codegen_expr e1 ctx in
     (* 保存左操作数到安全寄存器 *)
     let (save_code, saved_reg) = 
@@ -132,6 +129,12 @@ let rec codegen_expr expr ctx =
         match op with
         | Eq ->  [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
         | Neq -> [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "snez a0, t2" ]
+        | Leq -> [ (* a <= b 实现为 !(b < a) *)
+                  "slt t2, " ^ right_reg ^ ", " ^ saved_reg;
+                  "seqz a0, t2" ]
+        | Geq -> [ (* a >= b 实现为 !(a < b) *)
+                  "slt t2, " ^ saved_reg ^ ", " ^ right_reg;
+                  "seqz a0, t2" ]
         | _ ->   [ binop_to_asm op ^ " a0, " ^ saved_reg ^ ", " ^ right_reg ]
     in
     (code1 @ save_code @ code2 @ right_code @ compute_instr, "a0", ctx2)
