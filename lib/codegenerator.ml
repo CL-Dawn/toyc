@@ -155,87 +155,49 @@ let rec codegen_expr expr ctx =
       (code @ ["sw " ^ reg ^ ", " ^  string_of_int offset ^ "(s0)"], reg, ctx1)
   
   | Call (func, args) ->
-      (* 计算栈参数数量 *)
-      let num_args = List.length args in
-      let num_reg_args = min num_args (List.length arg_regs) in
-      let num_stack_args = num_args - num_reg_args in
+  (* 计算栈参数数量 *)
+      let num_reg_args = min (List.length args) (List.length arg_regs) in
+      let num_stack_args = List.length args - num_reg_args in
+      let stack_space = num_stack_args * 4 in
       
-      (* 为栈参数预留空间 (16字节对齐) *)
-      let stack_space = 
-        if num_stack_args > 0 then 
-          let aligned = (num_stack_args * 4 + 15) land (lnot 15) 
-          in aligned
-        else 0
-      in
-      
-      (* 定义移动代码生成函数 *)
-      let rec gen_move_code index used_tmps =
-        if index < num_reg_args then
-          let target_reg = List.nth arg_regs index in
-          let tmp_reg = List.nth used_tmps index in
-          ["mv " ^ target_reg ^ ", " ^ tmp_reg] @ gen_move_code (index+1) used_tmps
-        else
-          []
-      in
-      
-      (* 生成参数代码 - 修复寄存器覆盖问题 *)
-      let rec gen_args args ctx index used_tmps =
+      (* 生成参数代码 - 修复寄存器冲突 *)
+      let rec gen_args args ctx index stack_index =
         match args with
-        | [] -> ([], ctx, used_tmps)
+        | [] -> ([], ctx)
         | arg::rest ->
-            (* 使用临时寄存器保存参数值 *)
             let (code, reg, ctx1) = codegen_expr arg ctx in
-            
-            (* 选择下一个可用的临时寄存器 *)
-            let available_tmps = List.filter (fun r -> not (List.mem r used_tmps)) tmp_regs in
-            let tmp_reg = 
-              if available_tmps = [] then 
-                failwith "No available temporary registers for function arguments"
-              else 
-                List.hd available_tmps
-            in
-            
-            (* 将结果保存到临时寄存器 *)
-            let save_code = ["mv " ^ tmp_reg ^ ", " ^ reg] in
-            
-            let (arg_code, ctx2) = 
+            let arg_code, ctx2 = 
               if index < num_reg_args then (
-                (* 寄存器参数：只生成保存到临时寄存器的代码 *)
-                (code @ save_code, ctx1)
+                (* 寄存器参数：直接移动到目标寄存器 *)
+                let target_reg = List.nth arg_regs index in
+                (code @ [ "mv " ^ target_reg ^ ", " ^ reg ], ctx1)
               ) else (
-                (* 栈参数：直接存储到栈上 *)
-                let stack_index = index - num_reg_args in
-                let offset = stack_index * 4 in
-                (code @ save_code @ ["sw " ^ tmp_reg ^ ", " ^ string_of_int offset ^ "(sp)"], ctx1)
+                (* 栈参数：保存到临时栈位置 *)
+                let temp_offset = -12 - (index * 4) in
+                (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
               )
             in
-            
-            let (rest_code, ctx3, new_used_tmps) = 
-              gen_args rest ctx2 (index+1) (tmp_reg :: used_tmps) in
-            
-            (arg_code @ rest_code, ctx3, new_used_tmps)
+            let (rest_code, ctx3) = gen_args rest ctx2 (index+1) stack_index in
+            (arg_code @ rest_code, ctx3)
       in
       
-      (* 生成参数代码和移动代码 *)
-      let (arg_code, ctx1, used_tmps) = gen_args args ctx 0 [] in
-      let used_tmps_ordered = List.rev used_tmps in  (* 反转，使得第一个参数在列表头部 *)
-      let move_code = gen_move_code 0 used_tmps_ordered in
-      
-      let call_code = [ "call " ^ func ] in
-      
-      (* 集成栈调整指令 *)
-      let asm = 
-        if stack_space > 0 then 
+      (* 传递栈参数 *)
+      let push_stack_args = 
+        if num_stack_args > 0 then
           [ "addi sp, sp, " ^ string_of_int (-stack_space) ] @
-          arg_code @
-          move_code @
-          call_code @
-          [ "addi sp, sp, " ^ string_of_int stack_space ]
-        else 
-          arg_code @ move_code @ call_code
+          (List.init num_stack_args (fun i ->
+            let src_offset = -12 - (num_reg_args + i) * 4 in
+            [ "lw t0, " ^ string_of_int src_offset ^ "(s0)";
+              "sw t0, " ^ string_of_int (i * 4) ^ "(sp)" ]
+          ) |> List.flatten)
+        else []
       in
       
-      (asm, "a0", ctx1)
+      let (arg_code, ctx1) = gen_args args ctx 0 0 in
+      let call_code = [ "call " ^ func ] in
+      let cleanup_stack = if stack_space > 0 then [ "addi sp, sp, " ^ string_of_int stack_space ] else [] in
+      
+      (arg_code @ push_stack_args @ call_code @ cleanup_stack, "a0", ctx1)
 
 
 (* 语句代码生成 *)
