@@ -343,15 +343,27 @@ let codegen_function func =
 
 (* 程序入口点生成 *)
 let codegen_program (program : program) =
+  (* 确保 main 函数被标记为全局 *)
+  let main_decl = 
+    if List.exists (fun f -> f.name = "main") program then
+      [".global main"]
+    else 
+      [] 
+  in
+  
+  (* 生成所有函数代码 *)
   let funcs_code = List.map codegen_function program in
   
-  let main_code = if List.exists (fun f -> f.name = "main") program then
-      [".global main"] 
-    else [] in
+  (* 添加系统调用退出指令 *)
+  let exit_code = 
+    if List.exists (fun f -> f.name = "main") program then
+      ["li a7, 93"; "ecall"]  (* 仅在存在 main 时添加退出 *)
+    else 
+      [] 
+  in
   
-  let all_code = List.flatten funcs_code in
-  
-  main_code @ all_code @ ["li a7, 93"; "ecall"]  (* 退出系统调用 *)
+  (* 组合所有部分 *)
+  main_decl @ (List.flatten funcs_code) @ exit_code
 
 (* 辅助函数 *)
 let string_of_offset n = 
