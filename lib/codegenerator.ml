@@ -81,39 +81,60 @@ let rec codegen_expr expr ctx =
     let (label_end, ctx2) = new_label ctx1 "logical_end" in
     let (label_short, ctx3) = new_label ctx2 "logical_short" in
     
+    (* 保存左操作数到安全寄存器 *)
+    let (save_code, saved_reg) = 
+        if reg1 = "a0" then (["mv t0, a0"], "t0")
+        else ([], reg1)
+    in
+    
     (* 根据操作符类型确定分支条件和短路值 *)
     let (branch_instr, short_value) = 
-      if op = And then ("beqz", 0) else ("bnez", 1)
+        if op = And then ("beqz", 0) else ("bnez", 1)
     in
     
     let (code2, reg2, ctx4) = codegen_expr e2 ctx3 in
     
-    (* 主要修改：短路分支直接设置值，不再复制寄存器 *)
-    let asm = code1 @
-      [branch_instr ^ " " ^ reg1 ^ ", " ^ label_short] @
-      code2 @
-      (* 非短路分支：转换结果为布尔值 *)
-      ["snez " ^ reg2 ^ ", " ^ reg2] @
-      ["j " ^ label_end] @
-      [label_short ^ ":"] @
-      (* 短路分支：直接加载布尔值 *)
-      ["li " ^ reg2 ^ ", " ^ string_of_int short_value] @
-      [label_end ^ ":"]
+    (* 确保结果在安全寄存器中 *)
+    let (result_reg, result_code) = 
+        if reg2 = "a0" then ("t1", ["mv t1, a0"])
+        else (reg2, [])
     in
-    (asm, reg2, ctx4)
+    
+    let asm = code1 @ save_code @
+        [branch_instr ^ " " ^ saved_reg ^ ", " ^ label_short] @
+        code2 @ result_code @
+        (* 非短路分支：转换结果为布尔值 *)
+        ["snez a0, " ^ result_reg] @
+        ["j " ^ label_end] @
+        [label_short ^ ":"] @
+        (* 短路分支：直接加载布尔值 *)
+        ["li a0, " ^ string_of_int short_value] @
+        [label_end ^ ":"]
+    in
+    (asm, "a0", ctx4)
  | Binop (e1, op, e2) ->
-      let (code1, reg1, ctx1) = codegen_expr e1 ctx in
-       (* 使用不同的寄存器保存左操作数 *)
-      let save_left = [ "mv t1, " ^ reg1 ] in 
-      let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
-      
-      let compute_instr = 
+    let (code1, reg1, ctx1) = codegen_expr e1 ctx in
+    (* 保存左操作数到安全寄存器 *)
+    let (save_code, saved_reg) = 
+        if reg1 = "a0" then (["mv t0, a0"], "t0")
+        else ([], reg1)
+    in
+    
+    let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
+    
+    (* 确保右操作数在安全寄存器中 *)
+    let (right_reg, right_code) = 
+        if reg2 = "a0" then ("t1", ["mv t1, a0"])
+        else (reg2, [])
+    in
+    
+    let compute_instr = 
         match op with
-        | Eq ->  [ "xor t2, t1, " ^ reg2; "seqz a0, t2" ]
-        | Neq -> [ "xor t2, t1, " ^ reg2; "snez a0, t2" ]
-        | _ ->   [ binop_to_asm op ^ " a0, t1, " ^ reg2 ]
-      in
-      (code1 @ save_left @ code2 @ compute_instr, "a0", ctx2)
+        | Eq ->  [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
+        | Neq -> [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "snez a0, t2" ]
+        | _ ->   [ binop_to_asm op ^ " a0, " ^ saved_reg ^ ", " ^ right_reg ]
+    in
+    (code1 @ save_code @ code2 @ right_code @ compute_instr, "a0", ctx2)
   | Unop (Pos, e) ->  
       let (code, reg, ctx1) = codegen_expr e ctx in
       (code, reg, ctx1)  (* 正号不需要生成额外指令 *)
