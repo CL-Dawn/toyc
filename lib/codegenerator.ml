@@ -166,15 +166,18 @@ let rec codegen_expr expr ctx =
         | [] -> ([], ctx)
         | arg::rest ->
             let (code, reg, ctx1) = codegen_expr arg ctx in
-            let arg_code, ctx2 = 
+             (* 使用安全寄存器保存参数值 *)
+            let safe_reg = if List.mem reg arg_regs then "t0" else reg in
+            let save_code = if safe_reg <> reg then ["mv " ^ safe_reg ^ ", " ^ reg] else [] in
+            let (arg_code, ctx2) = 
               if index < num_reg_args then (
                 (* 寄存器参数：直接移动到目标寄存器 *)
                 let target_reg = List.nth arg_regs index in
-                (code @ [ "mv " ^ target_reg ^ ", " ^ reg ], ctx1)
+                (code @ save_code @ [ "mv " ^ target_reg ^ ", " ^ safe_reg ], ctx1)
               ) else (
                 (* 栈参数：保存到临时栈位置 *)
                 let temp_offset = -12 - (index * 4) in
-                (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
+                (code @ save_code @ [ "sw " ^ safe_reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
               )
             in
             let (rest_code, ctx3) = gen_args rest ctx2 (index+1) stack_index in
