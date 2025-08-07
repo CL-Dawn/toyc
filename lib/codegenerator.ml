@@ -109,32 +109,29 @@ let rec codegen_expr expr ctx =
     in
     (asm, "a0", ctx4)
 
-| Binop (e1, op, e2) ->
+  | Binop (e1, op, e2) ->
     let (code1, reg1, ctx1) = codegen_expr e1 ctx in
-    (* 保存左操作数到安全寄存器 *)
+    (* 保存左操作数到保存寄存器s1（而非临时寄存器t0） *)
     let (save_code, saved_reg) = 
-        if reg1 = "a0" then (["mv t0, a0"], "t0")
-        else ([], reg1)
+        if reg1 = "s1" then ([], "s1")  (* 已在保存寄存器中 *)
+        else (["mv s1, " ^ reg1], "s1")  (* 移到s1保存 *)
     in
     
     let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
     
-    (* 确保右操作数在安全寄存器中 *)
+    (* 右操作数处理（保持不变） *)
     let (right_reg, right_code) = 
         if reg2 = "a0" then ("t1", ["mv t1, a0"])
         else (reg2, [])
     in
     
+    (* 计算指令（使用保存寄存器saved_reg） *)
     let compute_instr = 
         match op with
         | Eq ->  [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
         | Neq -> [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "snez a0, t2" ]
-        | Leq -> [ (* a <= b 实现为 !(b < a) *)
-                  "slt t2, " ^ right_reg ^ ", " ^ saved_reg;
-                  "seqz a0, t2" ]
-        | Geq -> [ (* a >= b 实现为 !(a < b) *)
-                  "slt t2, " ^ saved_reg ^ ", " ^ right_reg;
-                  "seqz a0, t2" ]
+        | Leq -> [ "slt t2, " ^ right_reg ^ ", " ^ saved_reg; "seqz a0, t2" ]
+        | Geq -> [ "slt t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
         | _ ->   [ binop_to_asm op ^ " a0, " ^ saved_reg ^ ", " ^ right_reg ]
     in
     (code1 @ save_code @ code2 @ right_code @ compute_instr, "a0", ctx2)
