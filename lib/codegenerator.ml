@@ -160,27 +160,34 @@ let rec codegen_expr expr ctx =
       let num_stack_args = List.length args - num_reg_args in
       let stack_space = num_stack_args * 4 in
       
-      (* 生成参数代码 - 修复寄存器冲突 *)
+      (* 函数调用参数生成 - 优化立即数加载 *)
       let rec gen_args args ctx index stack_index =
-        match args with
-        | [] -> ([], ctx)
-        | arg::rest ->
-            let (code, reg, ctx1) = codegen_expr arg ctx in
-            let arg_code, ctx2 = 
-              if index < num_reg_args then (
-                (* 寄存器参数：直接移动到目标寄存器 *)
-                let target_reg = List.nth arg_regs index in
-                (code @ [ "mv " ^ target_reg ^ ", " ^ reg ], ctx1)
-              ) else (
-                (* 栈参数：保存到临时栈位置 *)
-                let temp_offset = -12 - (index * 4) in
-                (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
-              )
-            in
-            let (rest_code, ctx3) = gen_args rest ctx2 (index+1) stack_index in
-            (arg_code @ rest_code, ctx3)
-      in
-      
+      match args with
+      | [] -> ([], ctx)
+      | arg::rest ->
+          let (code, reg, ctx1) = codegen_expr arg ctx in
+          let arg_code, ctx2 = 
+            if index < num_reg_args then (
+              let target_reg = List.nth arg_regs index in  (* 目标寄存器（a0/a1等） *)
+              (* 优化：若参数是立即数，直接加载到目标寄存器 *)
+              let optimized_code = 
+                match arg with
+                | IntLit n -> ["li " ^ target_reg ^ ", " ^ string_of_int n]  (* 直接加载 *)
+                | _ -> 
+                    (* 非立即数：若当前寄存器不是目标寄存器，则移动过去 *)
+                    if reg = target_reg then code else code @ ["mv " ^ target_reg ^ ", " ^ reg]
+              in
+              (optimized_code, ctx1)
+            ) else (
+              (* 栈参数处理（原有逻辑） *)
+              let temp_offset = -12 - (index * 4) in
+              (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
+            )
+          in
+          let (rest_code, ctx3) = gen_args rest ctx2 (index+1) stack_index in
+          (arg_code @ rest_code, ctx3)
+        in
+        
       (* 传递栈参数 *)
       let push_stack_args = 
         if num_stack_args > 0 then
@@ -288,12 +295,11 @@ let rec codegen_stmt stmt ctx =
       in
       gen_block stmts ctx
 
-(* 函数代码生成 *)
+(* 函数代码生成 - 新增参数寄存器保存逻辑 *)
 let codegen_function func =
-  
   let ctx = initial_context func.name in
   
-  (* 分配参数空间 *)
+  (* 分配参数空间（原有逻辑） *)
   let ctx_with_params =
     let (_, ctx_after_params) = 
       List.fold_left
@@ -312,25 +318,36 @@ let codegen_function func =
     ctx_after_params
   in
   
-  (* 生成函数体 *)
+  (* 生成参数寄存器保存指令：将a0/a1等寄存器参数保存到栈帧 *)
+  let param_save_code =
+    List.mapi (fun i (_, name) ->
+      let reg = List.nth arg_regs i in  (* 参数i对应寄存器arg_regs[i] *)
+      let offset = lookup_var ctx_with_params name in  (* 参数在栈中的偏移 *)
+      "sw " ^ reg ^ ", " ^ string_of_int offset ^ "(s0)"  (* 保存寄存器到栈 *)
+    ) func.params
+  in
+  
+  (* 生成函数体（原有逻辑） *)
   let (body_code, ctx_body) = codegen_stmt func.body ctx_with_params in
   
-  (* 计算栈帧大小 (16字节对齐) *)
+  (* 计算栈帧大小（原有逻辑） *)
   let frame_size = 
     let min_offset = ctx_body.next_offset in
     let total = (-min_offset + 15) land (lnot 15) in
     max total 32
   in
   
-  (* 生成函数序言和结语 *)
+  (* 函数序言（新增参数保存指令） *)
   let prologue = [
     func.name ^ ":";
     "addi sp, sp, -" ^ string_of_int frame_size;
-    "sw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";
-    "sw s0, " ^ string_of_int (frame_size - 8) ^ "(sp)";
-    "addi s0, sp, " ^ string_of_int frame_size
-  ] in
+    "sw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";  (* 保存返回地址 *)
+    "sw s0, " ^ string_of_int (frame_size - 8) ^ "(sp)";  (* 保存栈帧基址 *)
+    "addi s0, sp, " ^ string_of_int frame_size;  (* 设置栈帧基址 *)
+  ] @ param_save_code  (* 追加参数寄存器保存指令 *)
+  in
   
+  (* 函数结语（原有逻辑） *)
   let epilogue = [
     func.name ^ "_exit:";
     "lw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";
