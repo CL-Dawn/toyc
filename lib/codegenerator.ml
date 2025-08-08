@@ -15,7 +15,7 @@ type context = {
 (* 初始化上下文 *)
 let initial_context func_name = {
   env = [];
-  next_offset = -16;     (* 增加栈偏移：预留s1的保存空间（原-12 → -16） *)
+  next_offset = -16;     (* 预留s1的保存空间 *)
   label_counter = 0;
   current_function = func_name;
   loop_stack = [];
@@ -118,14 +118,14 @@ let rec codegen_expr expr ctx =
         else (["mv s1, " ^ reg1], "s1")  (* 移到s1保存 *)
     in
     
-    (* 关键修改：保存s1到栈，避免被内层运算覆盖 *)
+    (* 保存s1到栈，避免被内层运算覆盖 *)
     let stack_offset = ctx1.next_offset in  (* 获取当前栈偏移 *)
     let save_s1_code = ["sw s1, " ^ string_of_int stack_offset ^ "(s0)"] in  (* 保存s1到栈 *)
     let new_ctx = { ctx1 with next_offset = stack_offset - 4 } in  (* 栈偏移减4（预留4字节） *)
     
     let (code2, reg2, ctx2) = codegen_expr e2 new_ctx in  (* 处理右操作数（可能嵌套运算） *)
     
-    (* 关键修改：从栈恢复s1的值 *)
+    (* 从栈恢复s1的值 *)
     let restore_s1_code = ["lw s1, " ^ string_of_int stack_offset ^ "(s0)"] in  (* 恢复s1 *)
     
     (* 右操作数处理 *)
@@ -294,11 +294,10 @@ let rec codegen_stmt stmt ctx =
       (code @ ["addi a0, " ^ reg ^ ", 0"; "j " ^ ctx.current_function ^ "_exit"], ctx1)
   
   | Block stmts ->
-      (* 保存块开始前的环境和栈偏移（仅恢复这两个字段） *)
+      (* 保存块开始前的环境（只恢复环境，不恢复栈偏移） *)
       let saved_env = ctx.env in
-      let saved_next_offset = ctx.next_offset in
       
-      (* 生成块内代码，允许标签计数器递增 *)
+      (* 生成块内代码，允许标签计数器和栈偏移递增 *)
       let rec gen_block stmts current_ctx =
         match stmts with
         | [] -> ([], current_ctx)
@@ -309,14 +308,13 @@ let rec codegen_stmt stmt ctx =
       in
       let (block_code, ctx_after_block) = gen_block stmts ctx in
       
-      (* 仅恢复环境和栈偏移，保留更新后的标签计数器等 *)
+      (* 仅恢复环境，保留更新后的栈偏移和标签计数器 *)
       let restored_ctx = {
         ctx_after_block with
         env = saved_env;
-        next_offset = saved_next_offset;
       } in
       
-      (block_code, restored_ctx)
+      (block_code, restored_ctx)  (* 关键修复：不恢复next_offset，保留栈偏移累计 *)
 
 (* 函数代码生成 *)
 let codegen_function func =
@@ -353,11 +351,11 @@ let codegen_function func =
   (* 生成函数体 *)
   let (body_code, ctx_body) = codegen_stmt func.body ctx_with_params in
   
-  (* 计算栈帧大小（确保足够保存所有被调用者寄存器） *)
+  (* 计算栈帧大小（确保足够保存所有变量和被调用者寄存器） *)
   let frame_size = 
     let min_offset = ctx_body.next_offset in
-    let total = (-min_offset + 15) land (lnot 15) in
-    max total (32 + (List.length callee_saved_regs - 2) * 4)  (* 增加s1的空间 *)
+    let total = (-min_offset + 15) land (lnot 15) in  (* 按16字节对齐 *)
+    max total (32 + (List.length callee_saved_regs - 2) * 4)  (* 基础空间需求 *)
   in
   
   (* 函数序言：保存返回地址、栈帧基址和被调用者保存寄存器 *)
@@ -381,7 +379,6 @@ let codegen_function func =
     "ret"
   ] in
   
-  (* 移除未使用的save_callee_regs和restore_callee_regs变量 *)
   (prologue @ body_code @ epilogue)
 
 (* 程序入口点生成 *)
@@ -411,4 +408,3 @@ let codegen_program (program : program) =
 (* 辅助函数 *)
 let string_of_offset n = 
   if n >= 0 then "+" ^ string_of_int n else string_of_int n
-    
