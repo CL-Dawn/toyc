@@ -62,15 +62,15 @@ let binop_to_asm = function
   | Gt  -> "sgt"   (* 伪指令，汇编器会处理 *)
   | _ -> failwith "Complex comparisons and logical ops need special handling"
 
-(* 表达式代码生成 *)
+(* 表达式代码生成 - 使用t0作为中间结果寄存器，避免覆盖a0 *)
 let rec codegen_expr expr ctx =
   match expr with
   | IntLit n ->
-      (["li a0, " ^ string_of_int n], "a0", ctx)
+      (["li t0, " ^ string_of_int n], "t0", ctx)  (* 结果存入t0而非a0 *)
   
   | Var name ->
       let offset = lookup_var ctx name in
-      (["lw a0, " ^ string_of_int offset ^ "(s0)"], "a0", ctx)
+      (["lw t0, " ^ string_of_int offset ^ "(s0)"], "t0", ctx)  (* 结果存入t0 *)
   
   | Binop (e1, op, e2) when op = And || op = Or ->
     (* 逻辑操作短路求值 *)
@@ -80,7 +80,7 @@ let rec codegen_expr expr ctx =
     
     (* 保存左操作数到安全寄存器 *)
     let (save_code, saved_reg) = 
-        if reg1 = "a0" then (["mv t0, a0"], "t0")
+        if reg1 = "t0" then (["mv t1, t0"], "t1")  (* 使用t1保存中间结果 *)
         else ([], reg1)
     in
     
@@ -93,7 +93,7 @@ let rec codegen_expr expr ctx =
     
     (* 确保结果在安全寄存器中 *)
     let (result_reg, result_code) = 
-        if reg2 = "a0" then ("t1", ["mv t1, a0"])
+        if reg2 = "t0" then ("t2", ["mv t2, t0"])  (* 使用t2保存右操作数结果 *)
         else (reg2, [])
     in
     
@@ -101,14 +101,14 @@ let rec codegen_expr expr ctx =
         [branch_instr ^ " " ^ saved_reg ^ ", " ^ label_short] @
         code2 @ result_code @
         (* 非短路分支：转换结果为布尔值 *)
-        ["snez a0, " ^ result_reg] @
+        ["snez t0, " ^ result_reg] @  (* 最终结果存入t0 *)
         ["j " ^ label_end] @
         [label_short ^ ":"] @
         (* 短路分支：直接加载布尔值 *)
-        ["li a0, " ^ string_of_int short_value] @
+        ["li t0, " ^ string_of_int short_value] @  (* 最终结果存入t0 *)
         [label_end ^ ":"]
     in
-    (asm, "a0", ctx4)
+    (asm, "t0", ctx4)  (* 返回t0作为结果寄存器 *)
 
   | Binop (e1, op, e2) ->
     let (code1, reg1, ctx1) = codegen_expr e1 ctx in
@@ -130,21 +130,21 @@ let rec codegen_expr expr ctx =
     
     (* 右操作数处理 *)
     let (right_reg, right_code) = 
-        if reg2 = "a0" then ("t1", ["mv t1, a0"])
+        if reg2 = "t0" then ("t1", ["mv t1, t0"])  (* 使用t1保存右操作数结果 *)
         else (reg2, [])
     in
     
-    (* 计算指令 *)
+    (* 计算指令 - 结果存入t0 *)
     let compute_instr = 
         match op with
-        | Eq ->  [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
-        | Neq -> [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "snez a0, t2" ]
-        | Leq -> [ "slt t2, " ^ right_reg ^ ", " ^ saved_reg; "seqz a0, t2" ]
-        | Geq -> [ "slt t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
-        | _ ->   [ binop_to_asm op ^ " a0, " ^ saved_reg ^ ", " ^ right_reg ]
+        | Eq ->  [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz t0, t2" ]
+        | Neq -> [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "snez t0, t2" ]
+        | Leq -> [ "slt t2, " ^ right_reg ^ ", " ^ saved_reg; "seqz t0, t2" ]
+        | Geq -> [ "slt t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz t0, t2" ]
+        | _ ->   [ binop_to_asm op ^ " t0, " ^ saved_reg ^ ", " ^ right_reg ]
     in
     (* 组合代码：左操作数处理 + 保存s1 + 右操作数处理 + 恢复s1 + 计算 *)
-    (code1 @ save_code @ save_s1_code @ code2 @ restore_s1_code @ right_code @ compute_instr, "a0", ctx2)
+    (code1 @ save_code @ save_s1_code @ code2 @ restore_s1_code @ right_code @ compute_instr, "t0", ctx2)
   
   | Unop (Pos, e) ->  
       let (code, reg, ctx1) = codegen_expr e ctx in
@@ -161,6 +161,7 @@ let rec codegen_expr expr ctx =
   | Assign (name, e) ->
       let offset = lookup_var ctx name in
       let (code, reg, ctx1) = codegen_expr e ctx in
+      (* 将t0中的值存入变量地址 *)
       (code @ ["sw " ^ reg ^ ", " ^  string_of_int offset ^ "(s0)"], reg, ctx1)
   
   | Call (func, args) ->
@@ -169,8 +170,8 @@ let rec codegen_expr expr ctx =
       let num_stack_args = List.length args - num_reg_args in
       let stack_space = num_stack_args * 4 in
       
-      (* 函数调用参数生成 - 优化立即数加载 *)
-      let rec gen_args args ctx index stack_index =
+      (* 函数调用参数生成 - 使用t0作为临时寄存器，避免覆盖a0-a7 *)
+      let rec gen_args args ctx index =
       match args with
       | [] -> ([], ctx)
       | arg::rest ->
@@ -183,17 +184,17 @@ let rec codegen_expr expr ctx =
                 match arg with
                 | IntLit n -> ["li " ^ target_reg ^ ", " ^ string_of_int n]  (* 直接加载 *)
                 | _ -> 
-                    (* 非立即数：若当前寄存器不是目标寄存器，则移动过去 *)
+                    (* 非立即数：从t0移动到目标寄存器 *)
                     if reg = target_reg then code else code @ ["mv " ^ target_reg ^ ", " ^ reg]
               in
               (optimized_code, ctx1)
             ) else (
-              (* 栈参数处理 *)
-              let temp_offset = -16 - (index * 4) in  (* 偏移调整：因增加s1保存空间 *)
+              (* 栈参数处理：先存入t0，再写入栈 *)
+              let temp_offset = -16 - (index * 4) in  (* 偏移调整 *)
               (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
             )
           in
-          let (rest_code, ctx3) = gen_args rest ctx2 (index+1) stack_index in
+          let (rest_code, ctx3) = gen_args rest ctx2 (index+1) in
           (arg_code @ rest_code, ctx3)
         in
         
@@ -203,17 +204,18 @@ let rec codegen_expr expr ctx =
           [ "addi sp, sp, " ^ string_of_int (-stack_space) ] @
           (List.init num_stack_args (fun i ->
             let src_offset = -16 - (num_reg_args + i) * 4 in  (* 偏移调整 *)
-            [ "lw t0, " ^ string_of_int src_offset ^ "(s0)";
+            [ "lw t0, " ^ string_of_int src_offset ^ "(s0)";  (* 使用t0作为临时寄存器 *)
               "sw t0, " ^ string_of_int (i * 4) ^ "(sp)" ]
           ) |> List.flatten)
         else []
       in
       
-      let (arg_code, ctx1) = gen_args args ctx 0 0 in
+      let (arg_code, ctx1) = gen_args args ctx 0 in
       let call_code = [ "call " ^ func ] in
       let cleanup_stack = if stack_space > 0 then [ "addi sp, sp, " ^ string_of_int stack_space ] else [] in
       
-      (arg_code @ push_stack_args @ call_code @ cleanup_stack, "a0", ctx1)
+      (* 函数返回值在a0中，将其移动到t0作为表达式结果 *)
+      (arg_code @ push_stack_args @ call_code @ cleanup_stack @ ["mv t0, a0"], "t0", ctx1)
 
 
 (* 语句代码生成 *)
@@ -239,14 +241,16 @@ let rec codegen_stmt stmt ctx =
       let (label_else, ctx2) = new_label ctx1 "if_else" in
       let (label_end, ctx3) = new_label ctx2 "if_end" in
       
+      (* 条件判断使用t0中的结果 *)
+      let cond_jump = ["beqz " ^ cond_reg ^ ", " ^ label_else] in
+      
       let (then_code, ctx4) = codegen_stmt then_stmt ctx3 in
       let (else_code, ctx5) = match else_stmt with
         | Some s -> codegen_stmt s ctx4
         | None -> ([], ctx4)
       in
       
-      let asm = cond_code @
-        ["beqz " ^ cond_reg ^ ", " ^ label_else] @
+      let asm = cond_code @ cond_jump @
         then_code @
         ["j " ^ label_end] @
         [label_else ^ ":"] @
@@ -271,7 +275,7 @@ let rec codegen_stmt stmt ctx =
         body_code @
         [label_cont ^ ":"] @
         cond_code @
-        ["bnez " ^ cond_reg ^ ", " ^ label_start] @
+        ["bnez " ^ cond_reg ^ ", " ^ label_start] @  (* 使用t0中的条件结果 *)
         [label_end ^ ":"]
       in
       (asm, ctx7)
@@ -291,7 +295,8 @@ let rec codegen_stmt stmt ctx =
   
   | Return (Some e) ->
       let (code, reg, ctx1) = codegen_expr e ctx in
-      (code @ ["addi a0, " ^ reg ^ ", 0"; "j " ^ ctx.current_function ^ "_exit"], ctx1)
+      (* 函数返回值需存入a0 *)
+      (code @ ["mv a0, " ^ reg; "j " ^ ctx.current_function ^ "_exit"], ctx1)
   
   | Block stmts ->
       (* 保存块开始前的环境（只恢复环境，不恢复栈偏移） *)
@@ -408,3 +413,4 @@ let codegen_program (program : program) =
 (* 辅助函数 *)
 let string_of_offset n = 
   if n >= 0 then "+" ^ string_of_int n else string_of_int n
+    
