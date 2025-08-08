@@ -15,7 +15,7 @@ type context = {
 (* 初始化上下文 *)
 let initial_context func_name = {
   env = [];
-  next_offset = -12;     (* 初始偏移: ra(4) + fp(4) + 预留(4) = 12字节 *)
+  next_offset = -16;     (* 增加栈偏移：预留s1的保存空间（原-12 → -16） *)
   label_counter = 0;
   current_function = func_name;
   loop_stack = [];
@@ -49,6 +49,7 @@ let size_of = function
 (* 寄存器分配策略 *)
 let arg_regs = ["a0"; "a1"; "a2"; "a3"; "a4"; "a5"; "a6"; "a7"]
 let tmp_regs = ["t0"; "t1"; "t2"; "t3"; "t4"; "t5"; "t6"]
+let callee_saved_regs = ["s0"; "s1"]  (* 被调用者需要保存的寄存器 *)
 
 (* 生成二元操作指令 *)
 let binop_to_asm = function
@@ -179,7 +180,7 @@ let rec codegen_expr expr ctx =
               (optimized_code, ctx1)
             ) else (
               (* 栈参数处理 *)
-              let temp_offset = -12 - (index * 4) in
+              let temp_offset = -16 - (index * 4) in  (* 偏移调整：因增加s1保存空间 *)
               (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
             )
           in
@@ -192,7 +193,7 @@ let rec codegen_expr expr ctx =
         if num_stack_args > 0 then
           [ "addi sp, sp, " ^ string_of_int (-stack_space) ] @
           (List.init num_stack_args (fun i ->
-            let src_offset = -12 - (num_reg_args + i) * 4 in
+            let src_offset = -16 - (num_reg_args + i) * 4 in  (* 偏移调整 *)
             [ "lw t0, " ^ string_of_int src_offset ^ "(s0)";
               "sw t0, " ^ string_of_int (i * 4) ^ "(sp)" ]
           ) |> List.flatten)
@@ -284,7 +285,7 @@ let rec codegen_stmt stmt ctx =
       (code @ ["addi a0, " ^ reg ^ ", 0"; "j " ^ ctx.current_function ^ "_exit"], ctx1)
   
   | Block stmts ->
-      (* 关键修复：保存块开始前的完整上下文 *)
+      (* 保存块开始前的完整上下文 *)
       let saved_ctx = ctx in
       
       (* 生成块内代码 *)
@@ -298,7 +299,7 @@ let rec codegen_stmt stmt ctx =
       in
       let (block_code, _) = gen_block stmts ctx in
       
-      (* 关键修复：完全恢复到块开始前的上下文，忽略块内的所有修改 *)
+      (* 完全恢复到块开始前的上下文 *)
       (block_code, saved_ctx)
 
 (* 函数代码生成 *)
@@ -311,7 +312,7 @@ let codegen_function func =
       List.fold_left
         (fun (i, ctx) (typ, name) ->
           let size = size_of typ in
-          let offset = -12 - i * size in
+          let offset = -16 - i * size in  (* 偏移调整：因增加s1保存空间 *)
           let next_ctx = { 
             ctx with 
             env = (name, offset) :: ctx.env;
@@ -336,32 +337,35 @@ let codegen_function func =
   (* 生成函数体 *)
   let (body_code, ctx_body) = codegen_stmt func.body ctx_with_params in
   
-  (* 计算栈帧大小 *)
+  (* 计算栈帧大小（确保足够保存所有被调用者寄存器） *)
   let frame_size = 
     let min_offset = ctx_body.next_offset in
     let total = (-min_offset + 15) land (lnot 15) in
-    max total 32
+    max total (32 + (List.length callee_saved_regs - 2) * 4)  (* 增加s1的空间 *)
   in
   
-  (* 函数序言 *)
+  (* 函数序言：保存返回地址、栈帧基址和被调用者保存寄存器 *)
   let prologue = [
     func.name ^ ":";
     "addi sp, sp, -" ^ string_of_int frame_size;
-    "sw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";  (* 保存返回地址 *)
-    "sw s0, " ^ string_of_int (frame_size - 8) ^ "(sp)";  (* 保存栈帧基址 *)
-    "addi s0, sp, " ^ string_of_int frame_size;  (* 设置栈帧基址 *)
+    "sw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";    (* 保存返回地址 *)
+    "sw s0, " ^ string_of_int (frame_size - 8) ^ "(sp)";    (* 保存栈帧基址s0 *)
+    "sw s1, " ^ string_of_int (frame_size - 12) ^ "(sp)";   (* 保存s1 *)
+    "addi s0, sp, " ^ string_of_int frame_size;             (* 设置栈帧基址 *)
   ] @ param_save_code  (* 追加参数寄存器保存指令 *)
   in
   
-  (* 函数结语 *)
+  (* 函数结语：恢复被调用者保存寄存器、返回地址和栈帧基址 *)
   let epilogue = [
     func.name ^ "_exit:";
-    "lw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";
-    "lw s0, " ^ string_of_int (frame_size - 8) ^ "(sp)";
+    "lw s1, " ^ string_of_int (frame_size - 12) ^ "(sp)";   (* 恢复s1 *)
+    "lw s0, " ^ string_of_int (frame_size - 8) ^ "(sp)";    (* 恢复栈帧基址s0 *)
+    "lw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";    (* 恢复返回地址 *)
     "addi sp, sp, " ^ string_of_int frame_size;
     "ret"
   ] in
   
+  (* 移除未使用的save_callee_regs和restore_callee_regs变量 *)
   (prologue @ body_code @ epilogue)
 
 (* 程序入口点生成 *)
@@ -391,3 +395,4 @@ let codegen_program (program : program) =
 (* 辅助函数 *)
 let string_of_offset n = 
   if n >= 0 then "+" ^ string_of_int n else string_of_int n
+    
