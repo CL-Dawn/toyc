@@ -118,7 +118,15 @@ let rec codegen_expr expr ctx =
         else (["mv s1, " ^ reg1], "s1")  (* 移到s1保存 *)
     in
     
-    let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
+    (* 关键修改：保存s1到栈，避免被内层运算覆盖 *)
+    let stack_offset = ctx1.next_offset in  (* 获取当前栈偏移 *)
+    let save_s1_code = ["sw s1, " ^ string_of_int stack_offset ^ "(s0)"] in  (* 保存s1到栈 *)
+    let new_ctx = { ctx1 with next_offset = stack_offset - 4 } in  (* 栈偏移减4（预留4字节） *)
+    
+    let (code2, reg2, ctx2) = codegen_expr e2 new_ctx in  (* 处理右操作数（可能嵌套运算） *)
+    
+    (* 关键修改：从栈恢复s1的值 *)
+    let restore_s1_code = ["lw s1, " ^ string_of_int stack_offset ^ "(s0)"] in  (* 恢复s1 *)
     
     (* 右操作数处理 *)
     let (right_reg, right_code) = 
@@ -135,7 +143,8 @@ let rec codegen_expr expr ctx =
         | Geq -> [ "slt t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
         | _ ->   [ binop_to_asm op ^ " a0, " ^ saved_reg ^ ", " ^ right_reg ]
     in
-    (code1 @ save_code @ code2 @ right_code @ compute_instr, "a0", ctx2)
+    (* 组合代码：左操作数处理 + 保存s1 + 右操作数处理 + 恢复s1 + 计算 *)
+    (code1 @ save_code @ save_s1_code @ code2 @ restore_s1_code @ right_code @ compute_instr, "a0", ctx2)
   
   | Unop (Pos, e) ->  
       let (code, reg, ctx1) = codegen_expr e ctx in
