@@ -294,10 +294,11 @@ let rec codegen_stmt stmt ctx =
       (code @ ["addi a0, " ^ reg ^ ", 0"; "j " ^ ctx.current_function ^ "_exit"], ctx1)
   
   | Block stmts ->
-      (* 保存块开始前的完整上下文 *)
-      let saved_ctx = ctx in
+      (* 保存块开始前的环境和栈偏移（仅恢复这两个字段） *)
+      let saved_env = ctx.env in
+      let saved_next_offset = ctx.next_offset in
       
-      (* 生成块内代码 *)
+      (* 生成块内代码，允许标签计数器递增 *)
       let rec gen_block stmts current_ctx =
         match stmts with
         | [] -> ([], current_ctx)
@@ -306,10 +307,16 @@ let rec codegen_stmt stmt ctx =
             let (code2, ctx2) = gen_block rest ctx1 in
             (code1 @ code2, ctx2)
       in
-      let (block_code, _) = gen_block stmts ctx in
+      let (block_code, ctx_after_block) = gen_block stmts ctx in
       
-      (* 完全恢复到块开始前的上下文 *)
-      (block_code, saved_ctx)
+      (* 仅恢复环境和栈偏移，保留更新后的标签计数器等 *)
+      let restored_ctx = {
+        ctx_after_block with
+        env = saved_env;
+        next_offset = saved_next_offset;
+      } in
+      
+      (block_code, restored_ctx)
 
 (* 函数代码生成 *)
 let codegen_function func =
