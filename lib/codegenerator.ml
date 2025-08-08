@@ -111,7 +111,7 @@ let rec codegen_expr expr ctx =
 
   | Binop (e1, op, e2) ->
     let (code1, reg1, ctx1) = codegen_expr e1 ctx in
-    (* 保存左操作数到保存寄存器s1（而非临时寄存器t0） *)
+    (* 保存左操作数到保存寄存器s1 *)
     let (save_code, saved_reg) = 
         if reg1 = "s1" then ([], "s1")  (* 已在保存寄存器中 *)
         else (["mv s1, " ^ reg1], "s1")  (* 移到s1保存 *)
@@ -119,13 +119,13 @@ let rec codegen_expr expr ctx =
     
     let (code2, reg2, ctx2) = codegen_expr e2 ctx1 in
     
-    (* 右操作数处理（保持不变） *)
+    (* 右操作数处理 *)
     let (right_reg, right_code) = 
         if reg2 = "a0" then ("t1", ["mv t1, a0"])
         else (reg2, [])
     in
     
-    (* 计算指令（使用保存寄存器saved_reg） *)
+    (* 计算指令 *)
     let compute_instr = 
         match op with
         | Eq ->  [ "xor t2, " ^ saved_reg ^ ", " ^ right_reg; "seqz a0, t2" ]
@@ -135,9 +135,11 @@ let rec codegen_expr expr ctx =
         | _ ->   [ binop_to_asm op ^ " a0, " ^ saved_reg ^ ", " ^ right_reg ]
     in
     (code1 @ save_code @ code2 @ right_code @ compute_instr, "a0", ctx2)
+  
   | Unop (Pos, e) ->  
       let (code, reg, ctx1) = codegen_expr e ctx in
       (code, reg, ctx1)  (* 正号不需要生成额外指令 *)
+  
   | Unop (Neg, e) ->
       let (code, reg, ctx1) = codegen_expr e ctx in
       (code @ ["neg " ^ reg ^ ", " ^ reg], reg, ctx1)
@@ -152,7 +154,7 @@ let rec codegen_expr expr ctx =
       (code @ ["sw " ^ reg ^ ", " ^  string_of_int offset ^ "(s0)"], reg, ctx1)
   
   | Call (func, args) ->
-  (* 计算栈参数数量 *)
+      (* 计算栈参数数量 *)
       let num_reg_args = min (List.length args) (List.length arg_regs) in
       let num_stack_args = List.length args - num_reg_args in
       let stack_space = num_stack_args * 4 in
@@ -176,7 +178,7 @@ let rec codegen_expr expr ctx =
               in
               (optimized_code, ctx1)
             ) else (
-              (* 栈参数处理（原有逻辑） *)
+              (* 栈参数处理 *)
               let temp_offset = -12 - (index * 4) in
               (code @ [ "sw " ^ reg ^ ", " ^ string_of_int temp_offset ^ "(s0)" ], ctx1)
             )
@@ -282,21 +284,28 @@ let rec codegen_stmt stmt ctx =
       (code @ ["addi a0, " ^ reg ^ ", 0"; "j " ^ ctx.current_function ^ "_exit"], ctx1)
   
   | Block stmts ->
-      let rec gen_block stmts ctx =
+      (* 关键修复：保存块开始前的完整上下文 *)
+      let saved_ctx = ctx in
+      
+      (* 生成块内代码 *)
+      let rec gen_block stmts current_ctx =
         match stmts with
-        | [] -> ([], ctx)
+        | [] -> ([], current_ctx)
         | stmt::rest ->
-            let (code1, ctx1) = codegen_stmt stmt ctx in
+            let (code1, ctx1) = codegen_stmt stmt current_ctx in
             let (code2, ctx2) = gen_block rest ctx1 in
             (code1 @ code2, ctx2)
       in
-      gen_block stmts ctx
+      let (block_code, _) = gen_block stmts ctx in
+      
+      (* 关键修复：完全恢复到块开始前的上下文，忽略块内的所有修改 *)
+      (block_code, saved_ctx)
 
-(* 函数代码生成 - 新增参数寄存器保存逻辑 *)
+(* 函数代码生成 *)
 let codegen_function func =
   let ctx = initial_context func.name in
   
-  (* 分配参数空间（原有逻辑） *)
+  (* 分配参数空间 *)
   let ctx_with_params =
     let (_, ctx_after_params) = 
       List.fold_left
@@ -324,17 +333,17 @@ let codegen_function func =
     ) func.params
   in
   
-  (* 生成函数体（原有逻辑） *)
+  (* 生成函数体 *)
   let (body_code, ctx_body) = codegen_stmt func.body ctx_with_params in
   
-  (* 计算栈帧大小（原有逻辑） *)
+  (* 计算栈帧大小 *)
   let frame_size = 
     let min_offset = ctx_body.next_offset in
     let total = (-min_offset + 15) land (lnot 15) in
     max total 32
   in
   
-  (* 函数序言（新增参数保存指令） *)
+  (* 函数序言 *)
   let prologue = [
     func.name ^ ":";
     "addi sp, sp, -" ^ string_of_int frame_size;
@@ -344,7 +353,7 @@ let codegen_function func =
   ] @ param_save_code  (* 追加参数寄存器保存指令 *)
   in
   
-  (* 函数结语（原有逻辑） *)
+  (* 函数结语 *)
   let epilogue = [
     func.name ^ "_exit:";
     "lw ra, " ^ string_of_int (frame_size - 4) ^ "(sp)";
