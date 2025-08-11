@@ -1,3 +1,4 @@
+exception Syntax_error
 type token =
   | INT of (int)
   | ID of (string)
@@ -31,8 +32,6 @@ type token =
   | LBRACE
   | RBRACE
   | EOF
-
-exception Syntax_error
 
 val program :
   (Lexing.lexbuf  -> token) -> Lexing.lexbuf -> Ast.program

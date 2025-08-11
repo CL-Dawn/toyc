@@ -1,7 +1,7 @@
 %{
   open Ast
+  exception Syntax_error
 %}
-%public exception Syntax_error
 %token <int> INT
 %token <string> ID
 %token INT_TYPE VOID_TYPE

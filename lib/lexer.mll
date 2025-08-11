@@ -7,7 +7,7 @@ rule token = parse
   | [' ' '\t' '\n'] { token lexbuf }  (* 跳过空白 *)
   | "//" [^ '\n']* '\n' { token lexbuf }  (* 单行注释 *)
   | "/*" ([^ '*'] | '*' [^ '/'])* "*/" { token lexbuf }  (* 多行注释 *)
-  | '-'? ['0'-'9']+ as num { INT (int_of_string num) }
+  | ['0'-'9']+ as num { INT (int_of_string num) }
   | "int" { INT_TYPE }
   | "void" { VOID_TYPE }
   | "if" { IF }
